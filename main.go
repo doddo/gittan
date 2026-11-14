@@ -10,8 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var version = "dev"
@@ -598,26 +600,25 @@ func runWithReleaseOptions(repo, prefix string, dryRun, auto bool, manualLevel b
 
 	changelogPath := filepath.Join(repo, "CHANGELOG.md")
 	var changelog string
-	if settings.changelogMode != changelogOff {
-		messageBaseTag := baseTag
-		if settings.changelogMode == changelogFull {
-			messageBaseTag = ""
+	if settings.changelogMode == changelogFull {
+		var err error
+		changelog, err = generateFullChangelog(repo, prefix, head, tag)
+		if err != nil {
+			return fmt.Errorf("pre-bump completed, but cannot generate CHANGELOG.md: %w", err)
 		}
-		messages, err := gitCommitMessages(repo, messageBaseTag, head)
+	} else if settings.changelogMode == changelogOn {
+		messages, err := gitCommitMessages(repo, baseTag, head)
 		if err != nil {
 			return fmt.Errorf("pre-bump completed, but cannot read commit history for CHANGELOG.md: %w", err)
 		}
 		messages = releaseMessages(messages)
-		var existingChangelog []byte
-		if settings.changelogMode == changelogFull {
-			existingChangelog = nil
-		} else {
-			existingChangelog, err = os.ReadFile(changelogPath)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("pre-bump completed, but cannot read CHANGELOG.md: %w", err)
-			}
+		existingChangelog, err := os.ReadFile(changelogPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("pre-bump completed, but cannot read CHANGELOG.md: %w", err)
 		}
-		changelog = renderChangelogMode(string(existingChangelog), tag, messages, settings.changelogMode)
+		date := time.Now().Format("2006-01-02")
+		entry := renderChangelogEntry(tag, date, messages)
+		changelog = prependChangelog(string(existingChangelog), entry)
 	}
 
 	if _, err := gitOutput(repo, "tag", tag, head); err != nil {
@@ -635,13 +636,29 @@ func runWithReleaseOptions(repo, prefix string, dryRun, auto bool, manualLevel b
 	return nil
 }
 
-func renderChangelog(existing, tag string, messages []string) string {
-	return renderChangelogMode(existing, tag, messages, changelogOn)
+func renderChangelog(existing, tag string) string {
+	return renderChangelogMode(existing, tag, nil, changelogOn)
 }
 
 func renderChangelogMode(existing, tag string, messages []string, mode changelogMode) string {
+	date := time.Now().Format("2006-01-02")
+	if tag == "Unreleased" || tag == "History" {
+		date = ""
+	}
+	entry := renderChangelogEntry(tag, date, messages)
+	if mode == changelogFull {
+		return entry
+	}
+	return prependChangelog(existing, entry)
+}
+
+func renderChangelogEntry(tag, date string, messages []string) string {
 	var entry strings.Builder
-	fmt.Fprintf(&entry, "<!-- gittan:release-start %s -->\n## 🚀 %s %s\n\n", tag, tag, festiveEmoji(tag))
+	if date != "" {
+		fmt.Fprintf(&entry, "<!-- gittan:release-start %s -->\n## 🚀 %s — %s %s\n\n", tag, tag, date, festiveEmoji(tag))
+	} else {
+		fmt.Fprintf(&entry, "<!-- gittan:release-start %s -->\n## 🚀 %s %s\n\n", tag, tag, festiveEmoji(tag))
+	}
 	for _, message := range messages {
 		subject := strings.TrimSpace(strings.SplitN(message, "\n", 2)[0])
 		if subject != "" {
@@ -649,14 +666,21 @@ func renderChangelogMode(existing, tag string, messages []string, mode changelog
 		}
 	}
 	fmt.Fprintf(&entry, "<!-- gittan:release-end %s -->\n", tag)
-	if mode != changelogFull && existing != "" {
-		entry.WriteByte('\n')
-		entry.WriteString(existing)
-		if !strings.HasSuffix(existing, "\n") {
-			entry.WriteByte('\n')
-		}
-	}
 	return entry.String()
+}
+
+func prependChangelog(existing, entry string) string {
+	if existing == "" {
+		return entry
+	}
+	var b strings.Builder
+	b.WriteString(entry)
+	b.WriteByte('\n')
+	b.WriteString(existing)
+	if !strings.HasSuffix(existing, "\n") {
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func festiveEmoji(label string) string {
@@ -666,6 +690,115 @@ func festiveEmoji(label string) string {
 		hash = hash*31 + uint64(character)
 	}
 	return emojis[hash%uint64(len(emojis))]
+}
+
+func gitTagDate(repo, tag string) string {
+	out, err := gitOutput(repo, "tag", "-l", "--format=%(creatordate:short)", tag)
+	if err == nil && strings.TrimSpace(out) != "" {
+		return strings.TrimSpace(out)
+	}
+	out, err = gitOutput(repo, "log", "-1", "--format=%cs", tag)
+	if err == nil && strings.TrimSpace(out) != "" {
+		return strings.TrimSpace(out)
+	}
+	return time.Now().Format("2006-01-02")
+}
+
+type versionTag struct {
+	name    string
+	version semVer
+	date    string
+}
+
+func generateFullChangelog(repo, prefix, head, newTag string) (string, error) {
+	tagsOutput, err := gitOutput(repo, "tag", "--list")
+	if err != nil {
+		return "", err
+	}
+	var versionTags []versionTag
+	foundNewTag := false
+	for _, tag := range strings.Split(tagsOutput, "\n") {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || !strings.HasPrefix(tag, prefix) {
+			continue
+		}
+		v, valid := parseVersion(strings.TrimPrefix(tag, prefix))
+		if !valid {
+			continue
+		}
+		if tag == newTag {
+			foundNewTag = true
+		}
+		date := gitTagDate(repo, tag)
+		versionTags = append(versionTags, versionTag{
+			name:    tag,
+			version: v,
+			date:    date,
+		})
+	}
+
+	if newTag != "" && !foundNewTag {
+		v, valid := parseVersion(strings.TrimPrefix(newTag, prefix))
+		if valid {
+			versionTags = append(versionTags, versionTag{
+				name:    newTag,
+				version: v,
+				date:    time.Now().Format("2006-01-02"),
+			})
+		}
+	}
+
+	sort.SliceStable(versionTags, func(i, j int) bool {
+		return versionTags[i].version.compare(versionTags[j].version) < 0
+	})
+
+	var unreleasedEntry string
+	if newTag == "" {
+		latestTag := ""
+		if len(versionTags) > 0 {
+			latestTag = versionTags[len(versionTags)-1].name
+		}
+		unreleasedMessages, err := gitCommitMessages(repo, latestTag, head)
+		if err != nil {
+			return "", fmt.Errorf("cannot read commit history for CHANGELOG.md: %w", err)
+		}
+		unreleasedMessages = releaseMessages(unreleasedMessages)
+		if len(unreleasedMessages) > 0 {
+			unreleasedEntry = renderChangelogEntry("Unreleased", "", unreleasedMessages)
+		}
+	}
+
+	var entries []string
+	if unreleasedEntry != "" {
+		entries = append(entries, unreleasedEntry)
+	}
+
+	for i := len(versionTags) - 1; i >= 0; i-- {
+		base := ""
+		if i > 0 {
+			base = versionTags[i-1].name
+		}
+		target := versionTags[i].name
+		if target == newTag {
+			target = head
+		}
+		messages, err := gitCommitMessages(repo, base, target)
+		if err != nil {
+			return "", fmt.Errorf("cannot read commit history for tag %s: %w", versionTags[i].name, err)
+		}
+		messages = releaseMessages(messages)
+		entry := renderChangelogEntry(versionTags[i].name, versionTags[i].date, messages)
+		entries = append(entries, entry)
+	}
+
+	var result strings.Builder
+	for i, entry := range entries {
+		if i > 0 {
+			result.WriteByte('\n')
+		}
+		result.WriteString(entry)
+	}
+	return result.String(), nil
 }
 
 func gitCommitMessages(repo, baseTag, head string) ([]string, error) {
@@ -708,48 +841,46 @@ func runStandaloneChangelog(repo, prefix string, mode changelogMode, output io.W
 	if err != nil {
 		return fmt.Errorf("cannot read repository HEAD: %w", err)
 	}
-	tags, err := gitOutput(repo, "tag", "--list")
-	if err != nil {
-		return err
-	}
-	baseTag := ""
-	baseVersion := semVer{}
-	for _, tag := range strings.Split(tags, "\n") {
-		if !strings.HasPrefix(tag, prefix) {
-			continue
-		}
-		candidate, valid := parseVersion(strings.TrimPrefix(tag, prefix))
-		if valid && (baseTag == "" || candidate.compare(baseVersion) > 0) {
-			baseTag = tag
-			baseVersion = candidate
-		}
-	}
-	messageBaseTag := baseTag
-	if mode == changelogFull {
-		messageBaseTag = ""
-	}
-	messages, err := gitCommitMessages(repo, messageBaseTag, head)
-	if err != nil {
-		return fmt.Errorf("cannot read commit history for CHANGELOG.md: %w", err)
-	}
-	messages = releaseMessages(messages)
-	label := "Unreleased"
-	if mode == changelogFull {
-		label = "History"
-	} else if len(messages) == 0 {
-		return nil
-	}
 	changelogPath := filepath.Join(repo, "CHANGELOG.md")
-	var existing []byte
+	var changelog string
 	if mode == changelogFull {
-		existing = nil
+		changelog, err = generateFullChangelog(repo, prefix, head, "")
+		if err != nil {
+			return fmt.Errorf("cannot generate CHANGELOG.md: %w", err)
+		}
 	} else {
-		existing, err = os.ReadFile(changelogPath)
+		tags, err := gitOutput(repo, "tag", "--list")
+		if err != nil {
+			return err
+		}
+		baseTag := ""
+		baseVersion := semVer{}
+		for _, tag := range strings.Split(tags, "\n") {
+			tag = strings.TrimSpace(tag)
+			if !strings.HasPrefix(tag, prefix) {
+				continue
+			}
+			candidate, valid := parseVersion(strings.TrimPrefix(tag, prefix))
+			if valid && (baseTag == "" || candidate.compare(baseVersion) > 0) {
+				baseTag = tag
+				baseVersion = candidate
+			}
+		}
+		messages, err := gitCommitMessages(repo, baseTag, head)
+		if err != nil {
+			return fmt.Errorf("cannot read commit history for CHANGELOG.md: %w", err)
+		}
+		messages = releaseMessages(messages)
+		if len(messages) == 0 {
+			return nil
+		}
+		existing, err := os.ReadFile(changelogPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("cannot read CHANGELOG.md: %w", err)
 		}
+		entry := renderChangelogEntry("Unreleased", "", messages)
+		changelog = prependChangelog(string(existing), entry)
 	}
-	changelog := renderChangelogMode(string(existing), label, messages, mode)
 	if err := os.WriteFile(changelogPath, []byte(changelog), 0o644); err != nil {
 		return fmt.Errorf("cannot write CHANGELOG.md: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -676,7 +677,7 @@ func TestStandaloneChangelogFullReplacesWithReleaseCommitSubjectsAndFestiveEmoji
 		t.Fatalf("read changelog: %v", err)
 	}
 	text := string(contents)
-	for _, expected := range []string{"History", "fix: first historical change", "feat: recent feature", "docs: remove old API"} {
+	for _, expected := range []string{"Unreleased", "0.0.1", "fix: first historical change", "feat: recent feature", "docs: remove old API"} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("FULL changelog is missing %q:\n%s", expected, text)
 		}
@@ -691,10 +692,69 @@ func TestStandaloneChangelogFullReplacesWithReleaseCommitSubjectsAndFestiveEmoji
 	}
 	festive := false
 	for _, emoji := range []string{"🎉", "🌟", "🍀", "🎊", "🎁", "🌈", "🪅"} {
-		festive = festive || strings.Contains(text, "History "+emoji)
+		festive = festive || strings.Contains(text, "Unreleased "+emoji)
 	}
 	if !festive {
 		t.Fatalf("FULL changelog lacks a festive emoji in its heading:\n%s", text)
+	}
+}
+
+func TestFullChangelogGeneratesPerTagHeadingsWithDatesAndRelevantCommits(t *testing.T) {
+	repo := newGitRepo(t)
+	commit(t, repo, "fix: initial release fix")
+	git(t, repo, "tag", "0.1.0")
+	commit(t, repo, "feat: feature for second release")
+	commit(t, repo, "chore: maintenance commit")
+	git(t, repo, "tag", "0.2.0")
+	commit(t, repo, "fix: patch for third release")
+	git(t, repo, "tag", "0.2.1")
+
+	path := filepath.Join(repo, "CHANGELOG.md")
+	if err := runStandaloneChangelog(repo, "", changelogFull, io.Discard); err != nil {
+		t.Fatalf("standalone FULL changelog error: %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read changelog: %v", err)
+	}
+	text := string(contents)
+
+	today := time.Now().Format("2006-01-02")
+
+	// Check headers and tags
+	if !strings.Contains(text, "<!-- gittan:release-start 0.2.1 -->") || !strings.Contains(text, "## 🚀 0.2.1 — "+today) {
+		t.Fatalf("missing 0.2.1 release header with date %s:\n%s", today, text)
+	}
+	if !strings.Contains(text, "<!-- gittan:release-start 0.2.0 -->") || !strings.Contains(text, "## 🚀 0.2.0 — "+today) {
+		t.Fatalf("missing 0.2.0 release header with date %s:\n%s", today, text)
+	}
+	if !strings.Contains(text, "<!-- gittan:release-start 0.1.0 -->") || !strings.Contains(text, "## 🚀 0.1.0 — "+today) {
+		t.Fatalf("missing 0.1.0 release header with date %s:\n%s", today, text)
+	}
+
+	// Verify order: 0.2.1 before 0.2.0 before 0.1.0
+	idx021 := strings.Index(text, "0.2.1")
+	idx020 := strings.Index(text, "0.2.0")
+	idx010 := strings.Index(text, "0.1.0")
+	if !(idx021 < idx020 && idx020 < idx010) {
+		t.Fatalf("expected tags in descending order (0.2.1, 0.2.0, 0.1.0), got indices: %d, %d, %d", idx021, idx020, idx010)
+	}
+
+	// Verify commit scoping
+	// 0.2.1 section should contain fix: patch for third release
+	sec021 := text[idx021:idx020]
+	if !strings.Contains(sec021, "🐛 fix: patch for third release") || strings.Contains(sec021, "feat: feature for second release") {
+		t.Fatalf("0.2.1 section contains wrong commits:\n%s", sec021)
+	}
+	// 0.2.0 section should contain feat: feature for second release
+	sec020 := text[idx020:idx010]
+	if !strings.Contains(sec020, "✨ feat: feature for second release") || strings.Contains(sec020, "fix: initial release fix") {
+		t.Fatalf("0.2.0 section contains wrong commits:\n%s", sec020)
+	}
+	// 0.1.0 section should contain fix: initial release fix
+	sec010 := text[idx010:]
+	if !strings.Contains(sec010, "🐛 fix: initial release fix") {
+		t.Fatalf("0.1.0 section contains wrong commits:\n%s", sec010)
 	}
 }
 
