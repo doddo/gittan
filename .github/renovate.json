@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "semanticCommits": "enabled",
+  "packageRules": [
+    {
+      "description": "Trigger minor version releases for minor and major Go dependency updates",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "major"
+      ],
+      "semanticCommitType": "feat"
+    },
+    {
+      "description": "Trigger patch version releases for patch and digest Go dependency updates",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "pin",
+        "bump"
+      ],
+      "semanticCommitType": "fix"
+    }
+  ]
+}
