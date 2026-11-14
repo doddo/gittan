@@ -9,7 +9,7 @@ steps:
       - go vet ./...
 
   - name: build-and-push
-    image: woodpeckerci/plugin-docker-buildx:5.0.0
+    image: woodpeckerci/plugin-docker-buildx:5.2.2
     settings:
       registry: ${GITTAN_REGISTRY}
       repo: ${GITTAN_IMAGE_REPO}
