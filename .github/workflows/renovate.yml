@@ -22,3 +22,5 @@ jobs:
         with:
           configurationFile: .github/renovate.json
           token: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
