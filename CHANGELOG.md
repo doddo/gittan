@@ -1,3 +1,9 @@
+<!-- gittan:release-start 0.5.0 -->
+## 🚀 0.5.0 🎁
+
+- ✨ feat(deps): update module github.com/burntsushi/toml to v1.6.0
+<!-- gittan:release-end 0.5.0 -->
+
 <!-- gittan:release-start 0.4.0 -->
 ## 🚀 0.4.0 🍀
 
