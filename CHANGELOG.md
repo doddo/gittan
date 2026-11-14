@@ -1,3 +1,9 @@
+<!-- gittan:release-start 0.4.0 -->
+## 🚀 0.4.0 🍀
+
+- ✨ feat: add date to changelog
+<!-- gittan:release-end 0.4.0 -->
+
 <!-- gittan:release-start 0.3.1 -->
 ## 🚀 0.3.1 🌟
 
