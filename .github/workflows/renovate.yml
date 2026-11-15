@@ -24,3 +24,4 @@ jobs:
           token: ${{ secrets.RENOVATE_TOKEN || secrets.GITHUB_TOKEN }}
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
+          AUTOMERGE: true
