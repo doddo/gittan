@@ -4,6 +4,8 @@
     "config:recommended"
   ],
   "semanticCommits": "enabled",
+  "autoApprove": true,
+  "automerge": true,
   "packageRules": [
     {
       "description": "Trigger minor version releases for minor and major Go dependency updates",
